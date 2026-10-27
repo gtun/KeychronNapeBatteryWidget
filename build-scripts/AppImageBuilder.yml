@@ -1,0 +1,51 @@
+version: 1
+
+script:
+  - mkdir -p AppDir/usr/src
+  - mkdir -p AppDir/usr/share/icons/hicolor/256x256/apps
+  - cp -a ./src AppDir/usr
+  - cp widget_logo.png AppDir/usr/share/icons/hicolor/256x256/apps
+  - apt-get update && apt-get install -y --no-install-recommends squashfs-tools python3
+
+AppDir:
+  path: ./AppDir
+  app_info:
+    id: KeychronNapeBatteryWidget
+    name: KeychronNapeBatteryWidget
+    icon: widget_logo
+    version: "1.0"
+    exec: usr/bin/python3
+    exec_args: "$APPDIR/usr/src/nape_widget.py $@"
+
+  apt:
+    arch: amd64
+    allow_unauthenticated: true
+    sources:
+      - sourceline: deb http://archive.ubuntu.com/ubuntu/ jammy main restricted universe multiverse
+      - sourceline: deb http://archive.ubuntu.com/ubuntu/ jammy-updates main restricted universe multiverse
+      - sourceline: deb http://security.ubuntu.com/ubuntu jammy-security main restricted universe multiverse
+    include:
+      - python3
+      - python3-pkg-resources
+      - libfreetype6
+      - libfontconfig1
+      - libhidapi-hidraw0
+      - bash
+      - coreutils
+    exclude:
+      - usr/share/man
+      - usr/share/doc/*/README.*
+      - usr/share/doc/*/changelog.*
+      - usr/share/doc/*/NEWS.*
+      - usr/share/doc/*/TODO.*
+
+  runtime:
+    env:
+      PATH: '${APPDIR}/usr/bin:${PATH}'
+      PYTHONHOME: '${APPDIR}/usr'
+      PYTHONPATH: '${APPDIR}/usr/lib/python3.10/site-packages'
+
+AppImage:
+  arch: x86_64
+  sign-key: None
+  file_name: 'KeychronNapeBatteryWidget.AppImage'

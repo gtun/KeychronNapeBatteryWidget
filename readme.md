@@ -1,0 +1,112 @@
+# Keychron Nape battery widget
+
+A small system tray widget that shows the battery level of the **Keychron Nape Pro** trackball.
+It is based on [MrAdrianPl/keychron_battery_widget](https://github.com/MrAdrianPl/keychron_battery_widget), which does the same for the Keychron M5.
+
+- Works over the **Keychron Link-KM 2.4 GHz receiver** (`3434:d026`) and a **USB cable** (`3434:0440`).
+  If both are connected, the cable is used.
+- The tray icon shows the percentage as large digits above a level bar, drawn natively at each tray size so it stays readable at 16 px. The bar turns amber at 30%, the digits and bar turn red at 15%, and both are green while charging. Use `--no-text` for a battery outline and `--theme dark|light` if your panel colour is detected wrongly.
+- Sends a desktop notification once when the battery drops to 15% or below.
+- Re-reads every 5 minutes. Left-click the icon or choose **Refresh now** to read it immediately.
+- While the Nape is asleep, the icon fades and the tooltip shows the last reading and when it was taken.
+- Follows the desktop light/dark theme.
+- Bluetooth is not supported. Over Bluetooth, the OS usually shows the battery itself through the standard BLE Battery Service.
+
+Should work on any desktop that has a system tray.
+
+## How it works
+
+The Nape Pro runs Keychron's ZMK-based firmware. Unlike the M5, it does not use the `b3 06` request on interface 4.
+It exposes a VIA-style Raw HID collection (usage page `0xFF60`, usage `0x61`) that takes 32-byte packets. The Link-KM receiver exposes the same collection and forwards the packets to the trackball.
+
+```
+request : 00 | a7 31 00 00 ... (32 bytes)     leading 00 = HID report ID
+reply   :      a7 31 <percent> <charging> ...
+```
+
+Over the receiver, the widget first sends `b2` to check whether the Nape (`3434:4004`) is connected in a receiver slot.
+Replies that don't match the request, such as layer-change (`a3`) and receiver (`bc`) notifications, are skipped.
+
+The protocol comes from the reverse-engineering work in [nvalis/nape_pro](https://github.com/nvalis/nape_pro) and [ky0209/NapeBar](https://github.com/ky0209/NapeBar).
+
+## Running from source (Linux)
+
+```sh
+sudo apt install libhidapi-hidraw0          # Fedora: hidapi, Arch: hidapi
+python3 -m pip install -r requirements.txt  # PyQt6 >= 6.5, hid
+python3 src/nape_widget.py                  # --interval 120, --no-text
+```
+
+To check the connection without the GUI:
+
+```sh
+python3 src/nape_battery.py
+# BatteryReading(status=<Status.OK: 'ok'>, connection=<Connection.WIRELESS: 'wireless'>, percent=87, charging=False, detail='')
+```
+
+### Device permissions
+
+By default, regular users can't open `/dev/hidraw*`. Install the included udev rule, then replug the receiver or cable:
+
+```sh
+sudo cp udev/99-keychron-nape.rules /etc/udev/rules.d/
+sudo udevadm control --reload-rules && sudo udevadm trigger
+```
+
+Without the rule, the tooltip shows *"No permission to open the device"*.
+
+### Autostart
+
+Copy a desktop entry into `~/.config/autostart/`:
+
+```ini
+[Desktop Entry]
+Type=Application
+Name=Keychron Nape battery
+Exec=python3 /path/to/src/nape_widget.py
+```
+
+## AppImage
+
+Pushing a tag runs `.github/workflows/build.yml`. It runs the tests, builds `KeychronNapeBatteryWidget.AppImage` and the Windows exe, and attaches both to a draft release.
+
+## Windows
+
+Download `KeychronNapeBatteryWidget.exe` and double-click it. It's a single portable file: nothing to install, no Python, no drivers, and no admin rights needed.
+
+- The icon may start in the hidden tray area (the `^` arrow). To keep it visible, drag it onto the taskbar.
+- To start it at login, right-click the icon and choose **Start automatically at login**. This adds an entry under `HKCU\...\CurrentVersion\Run` that points at the exe's current location, so move the exe to its permanent folder first.
+- SmartScreen may warn that the exe is unsigned. Choose **More info → Run anyway**.
+
+To build the exe yourself (needs Python 3.10+):
+
+```powershell
+powershell -ExecutionPolicy Bypass -File .\build-scripts\build_windows.ps1
+# -> dist\KeychronNapeBatteryWidget.exe
+```
+
+The script installs the dependencies and PyInstaller into `.venv-win`, downloads `hidapi.dll` from the [hidapi releases](https://github.com/libusb/hidapi/releases), and bundles everything into one file. Pushing a tag also builds the exe on GitHub Actions.
+
+To run from source instead, install the requirements and put `hidapi.dll` (x64) next to `src/nape_battery.py`.
+
+## Tests
+
+```sh
+python3 -m pip install pytest
+python3 -m pytest tests
+```
+
+The tests use a fake HID device, so they don't need the hardware.
+
+## Known firmware quirk
+
+The Nape firmware sends a notification on the Raw HID interface whenever the layer changes. Some reports say that on Linux, if nothing reads these notifications, the trackball's USB stack can hang until it is replugged. This widget opens the interface only briefly when it polls. If you see this hang, see [this workaround](https://github.com/youknowcast/ykc-omarchy-setup-kit/pull/3).
+
+## Credits
+
+- [MrAdrianPl/keychron_battery_widget](https://github.com/MrAdrianPl/keychron_battery_widget), the Keychron M5 battery widget this project is based on and adapted from.
+- [nvalis/nape_pro](https://github.com/nvalis/nape_pro) and [ky0209/NapeBar](https://github.com/ky0209/NapeBar), for reverse-engineering the Nape Pro's Raw HID protocol.
+
+## License
+
+GPL-3.0, the same as the original project.

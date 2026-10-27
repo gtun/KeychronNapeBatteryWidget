@@ -1,0 +1,12 @@
+__pycache__/
+*.pyc
+.venv/
+AppDir/
+appimage-build/
+*.AppImage
+*.zsync
+build/
+dist/
+.venv-win/
+*.spec
+.pytest_cache/
