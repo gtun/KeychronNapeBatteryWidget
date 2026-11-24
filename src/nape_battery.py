@@ -60,6 +60,7 @@ class BatteryReading:
 
 
 _hid_module = None
+_hidapi_dll = None  # keeps the Windows hidapi.dll handle loaded
 
 
 def _hid():
@@ -67,15 +68,21 @@ def _hid():
     global _hid_module
     if _hid_module is not None:
         return _hid_module
-    if sys.platform == "win32":
-        # Python 3.8+ no longer searches PATH for ctypes DLLs; look for hidapi.dll
-        # inside a PyInstaller bundle, next to the exe, or next to this script.
-        # Only register it once: every add_dll_directory call adds a permanent
-        # entry, and repeating it on each poll eventually fails with WinError 206.
+    global _hidapi_dll
+    if sys.platform == "win32" and _hidapi_dll is None:
+        # Python 3.8+ no longer searches PATH for ctypes DLLs, so load hidapi.dll
+        # by full path from the PyInstaller bundle, next to the exe, or next to
+        # this script; hid's own LoadLibrary("hidapi.dll") then reuses the
+        # already-loaded module. os.add_dll_directory is deliberately not used:
+        # each call adds a permanent search entry, and after enough polls
+        # Windows rejects it with WinError 206 ("filename or extension is too long").
+        import ctypes
+
         for folder in (getattr(sys, "_MEIPASS", None), os.path.dirname(sys.executable),
                        os.path.dirname(os.path.abspath(__file__))):
-            if folder and os.path.exists(os.path.join(folder, "hidapi.dll")):
-                os.add_dll_directory(folder)
+            dll = os.path.join(folder, "hidapi.dll") if folder else None
+            if dll and os.path.exists(dll):
+                _hidapi_dll = ctypes.CDLL(dll)
                 break
     import hid
 
