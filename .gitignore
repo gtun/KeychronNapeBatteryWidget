@@ -10,3 +10,4 @@ dist/
 .venv-win/
 *.spec
 .pytest_cache/
+*.icuewidget

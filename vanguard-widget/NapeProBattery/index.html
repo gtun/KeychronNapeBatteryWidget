@@ -1,0 +1,142 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>'Nape Pro Battery'</title>
+  <link rel="icon" type="image/svg+xml" href="resources/icon.svg" />
+  <meta name="x-icue-property" content="textColor" data-label="'Text Color'" data-type="color" data-default="'#ffffff'" />
+  <meta name="x-icue-property" content="backgroundColor" data-label="'Background'" data-type="color" data-default="'#000000'" />
+  <script type="application/json" id="x-icue-groups">
+  [
+    { "title": "'Widget Personalization'", "properties": ["textColor", "backgroundColor"] }
+  ]
+  </script>
+  <link rel="stylesheet" type="text/css" href="styles/style.css" />
+</head>
+<body>
+  <div class="widget-root empty" id="root">
+    <div class="hero">
+      <div class="percent" id="percent">...</div>
+      <div class="side">
+        <span class="name">Nape Pro</span>
+        <span id="connection"></span>
+        <svg class="bolt" viewBox="0 0 12 20" aria-hidden="true"><path d="M7 0 0 11h5l-1 9 8-12H7z" /></svg>
+      </div>
+    </div>
+    <div class="bar"><div class="fill" id="fill"></div></div>
+    <div class="note" id="note">Connecting to the Nape battery app</div>
+  </div>
+
+  <script>
+    // Battery data comes from the Keychron Nape battery app (src/nape_bridge.py),
+    // which serves it on localhost. The port must match manifest.json.
+    var BRIDGE_URL = 'http://localhost:47815/battery';
+    var POLL_MS = 5000;
+    var LOW = 15, AMBER = 30;
+    var COLORS = { green: '#56d364', amber: '#e3b341', red: '#ff7b72' };
+
+    // iCUE API binding: bare assignment is intentional (see iCUE widget docs).
+    icueEvents = {
+      'onDataUpdated': onIcueDataUpdated,
+      'onICUEInitialized': onIcueInitialized
+    };
+
+    function getIcueProperty(name) {
+      if (typeof window !== 'undefined' && Object.prototype.hasOwnProperty.call(window, name)) {
+        var value = window[name];
+        if (value !== undefined && value !== null && value !== '') return value;
+      }
+      try {
+        var v = Function('return typeof ' + name + ' !== "undefined" ? ' + name + ' : undefined')();
+        if (v !== undefined && v !== null && v !== '') return v;
+      } catch (e) {}
+      return undefined;
+    }
+
+    function onIcueDataUpdated() {
+      var style = document.documentElement.style;
+      style.setProperty('--text-color', getIcueProperty('textColor') || '#ffffff');
+      style.setProperty('--bg-color', getIcueProperty('backgroundColor') || '#000000');
+    }
+
+    function onIcueInitialized() {
+      onIcueDataUpdated();
+    }
+
+    var el = {
+      root: document.getElementById('root'),
+      percent: document.getElementById('percent'),
+      connection: document.getElementById('connection'),
+      fill: document.getElementById('fill'),
+      note: document.getElementById('note')
+    };
+    var lastData = null;  // kept so a bridge hiccup does not blank the screen
+
+    function clock(seconds) {
+      var d = new Date(seconds * 1000);
+      return ('0' + d.getHours()).slice(-2) + ':' + ('0' + d.getMinutes()).slice(-2);
+    }
+
+    function levelColor(percent, charging) {
+      if (charging) return COLORS.green;
+      if (percent <= LOW) return COLORS.red;
+      if (percent <= AMBER) return COLORS.amber;
+      return '';
+    }
+
+    function show(percent, charging, stale, connection, note) {
+      var cls = ['widget-root'];
+      if (percent === null || percent === undefined) {
+        cls.push('empty');
+        el.percent.textContent = '--';
+        el.fill.style.width = '0';
+      } else {
+        el.percent.innerHTML = percent + '<span class="unit">%</span>';
+        el.fill.style.width = percent + '%';
+        if (stale) cls.push('stale');
+        else if (charging) cls.push('charging');
+        else if (percent <= LOW) cls.push('low');
+      }
+      var color = (percent === null || percent === undefined || stale) ? '' : levelColor(percent, charging);
+      document.documentElement.style.setProperty('--level-color', color || 'var(--text-color)');
+      el.root.className = cls.join(' ');
+      el.connection.textContent = connection;
+      el.note.textContent = note;
+    }
+
+    function render(data) {
+      var conn = data.connection === 'wired' ? 'USB' : data.connection === 'wireless' ? '2.4 GHz' : '';
+      if (data.status === 'ok') {
+        show(data.percent, data.charging, false, conn,
+             (data.charging ? 'Charging' : 'Updated') + ' ' + clock(data.updated));
+      } else if (data.last_percent !== null && data.last_percent !== undefined) {
+        show(data.last_percent, false, true, conn, data.message + ' \u00b7 ' + clock(data.last_updated));
+      } else {
+        show(null, false, false, conn, data.message);
+      }
+    }
+
+    function poll() {
+      fetch(BRIDGE_URL, { cache: 'no-store' })
+        .then(function (r) { if (!r.ok) throw new Error('HTTP ' + r.status); return r.json(); })
+        .then(function (data) { lastData = data; render(data); })
+        .catch(function () {
+          // App not running, or iCUE's localhost permission was denied/revoked.
+          var note = 'Start the Nape battery app';
+          if (lastData && lastData.status === 'ok') {
+            show(lastData.percent, false, true, '', note);
+          } else {
+            show(null, false, false, '', note);
+          }
+        })
+        .then(function () { setTimeout(poll, POLL_MS); });
+    }
+
+    if (typeof iCUE_initialized !== 'undefined' && iCUE_initialized) {
+      onIcueInitialized();
+    }
+    poll();
+  </script>
+</body>
+</html>

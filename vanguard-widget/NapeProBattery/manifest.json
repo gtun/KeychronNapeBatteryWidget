@@ -1,0 +1,23 @@
+{
+	"author": "keychronNapeBatteryWidget",
+	"id": "io.github.keychronnapebatterywidget.napebattery",
+	"name": "Nape Pro Battery",
+	"description": "Shows the Keychron Nape Pro trackball battery level. Needs the Keychron Nape battery app running on this PC with 'Show on Corsair Vanguard screen' turned on.",
+	"version": "1.0.0",
+	"preview_icon": "resources/icon.svg",
+	"min_app_version": "5.47",
+	"min_framework_version": "1.0.0",
+	"os": [
+		{
+			"platform": "windows"
+		}
+	],
+	"supported_devices": [
+		{
+			"type": "keyboard_lcd"
+		}
+	],
+	"permissions": [
+		{ "type": "url", "domain": "localhost", "port": 47815 }
+	]
+}
