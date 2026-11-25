@@ -92,6 +92,55 @@ The script installs the dependencies and PyInstaller into `.venv-win`, downloads
 
 To run from source instead, install the requirements and put `hidapi.dll` (x64) next to `src/nape_battery.py`.
 
+## Corsair Vanguard 96 keyboard screen
+
+The battery level can also be shown on the 320×170 screen of a **Corsair Vanguard 96 / Vanguard Pro 96** keyboard.
+
+iCUE's built-in screen options only take images, but iCUE 5.47 and later can also run custom **HTML widgets** on the keyboard screen (device type `keyboard_lcd`).
+A widget runs inside iCUE's embedded browser, so it can't open the Nape over HID itself. Instead, the tray app serves the reading on `localhost`, and the widget polls it:
+
+```
+Nape Pro ──HID──> tray app (nape_bridge.py) ──http://localhost:47815/battery──> iCUE widget ──> Vanguard screen
+```
+
+The tray app only listens on `127.0.0.1`, only answers `GET /battery`, and rejects requests whose `Host` isn't a loopback name.
+
+**Setup (Windows):**
+
+1. Run the tray app, right-click its icon and turn on **Show on Corsair Vanguard screen** (or start it with `--vanguard`). The choice is remembered.
+   On Windows Firewall, no inbound rule is needed: the port is loopback-only.
+2. Package the widget with Corsair's Widget Builder CLI (needs Node.js):
+   ```powershell
+   npm install -g icuewidget-cli
+   icuewidget validate vanguard-widget\NapeProBattery
+   icuewidget package vanguard-widget\NapeProBattery
+   ```
+   Pushing a tag also builds `NapeProBattery.icuewidget` on GitHub Actions.
+3. In iCUE (5.47 or later), open the keyboard, go to the **Widgets** list, click **+** and pick the `.icuewidget` file (or double-click it). Accept the `localhost:47815` network permission it asks for.
+4. Add **Nape Pro Battery** to the screen. Switch screen widgets with **FN + ←/→** or the dial (set the dial to *Screen Widget* in the Rotary Dial tab).
+
+The widget shows the percentage, a level bar in the same colours as the tray icon, the connection (USB or 2.4 GHz) and a bolt while charging.
+While the Nape sleeps it keeps the last level, faded, with the time it was read. If the tray app isn't running, it says so.
+
+Limits from iCUE: widgets only run while iCUE is open and the keyboard is connected by USB cable, and they can't be saved to the keyboard's hardware mode.
+
+Without the tray icon, the bridge can also run on its own: `python src/nape_bridge.py`.
+
+### Without iCUE (experimental)
+
+The tray app can also draw on the screen directly, so neither iCUE nor Web Hub has to run. The keyboard shows images from its own onboard memory, the ones Corsair Web Hub uploads. The app overwrites one of those images with the battery picture, and the screen redraws at once.
+
+> [!CAUTION]
+> This uses an **undocumented, reverse-engineered protocol** (see [src/vanguard_screen.py](src/vanguard_screen.py)). It is only tested on one wired Vanguard Pro 96 (`1b1c:2b0e`). Each redraw writes to the keyboard's flash memory. A bad write could leave the screen blank until you upload an image again with Web Hub or iCUE.
+
+1. With iCUE closed, open [Corsair Web Hub](https://www.corsair.com/web-hub/index.html) in Chrome or Edge. Upload any 248×170 image on the keyboard's **Screen** page, then close the tab.
+2. In the tray menu, turn on **Draw on Corsair Vanguard screen (no iCUE)**. The app takes the newest screen image and draws over it. The other images stay as they are.
+3. Switch to that image with **FN + ←/→**.
+
+To limit flash writes, the app redraws only when the level moves by 5% or more, crosses 30% or 15%, reaches 100%, or charging starts or stops. While the Nape sleeps, the screen keeps the last picture. The keyboard must be connected by USB cable. Don't run iCUE at the same time, because both would talk to the keyboard.
+
+`python src/vanguard_screen.py list` shows the screen's images without changing anything.
+
 ## Tests
 
 ```sh

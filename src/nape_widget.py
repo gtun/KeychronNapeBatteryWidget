@@ -6,11 +6,12 @@ import sys
 import time
 from pathlib import Path
 
-from PyQt6.QtCore import QDir, QLockFile, QRectF, Qt, QTimer
-from PyQt6.QtGui import QAction, QColor, QFont, QFontMetrics, QIcon, QPainter, QPen, QPixmap
+from PyQt6.QtCore import QDir, QLockFile, QRectF, QSettings, Qt, QTimer
+from PyQt6.QtGui import QAction, QColor, QFont, QFontMetrics, QIcon, QImage, QPainter, QPainterPath, QPen, QPixmap
 from PyQt6.QtWidgets import QApplication, QMenu, QSystemTrayIcon
 
 from nape_battery import Connection, Status, read_battery
+from nape_bridge import BatteryBridge
 
 LOW_BATTERY = 15
 CRITICAL_BATTERY = 5
@@ -186,6 +187,85 @@ def _render_battery(s, percent, charging, fg: QColor, dark) -> QPixmap:
     return pixmap
 
 
+def draw_screen(percent: int, charging: bool, connection) -> QImage:
+    """The picture for the 248x170 Vanguard keyboard screen, in its native RGB565."""
+    from vanguard_screen import HEIGHT, WIDTH
+
+    image = QImage(WIDTH, HEIGHT, QImage.Format.Format_RGB32)
+    image.fill(QColor("#000000"))
+    p = QPainter(image)
+    p.setRenderHint(QPainter.RenderHint.Antialiasing)
+    p.setRenderHint(QPainter.RenderHint.TextAntialiasing)
+    white, muted = QColor("#ffffff"), QColor(255, 255, 255, 140)
+    accent = level_color(percent, charging, dark=True)
+    digits = accent if accent is not None and (charging or percent <= LOW_BATTERY) else white
+
+    pad = 14
+    font = QFont("Segoe UI")
+    font.setBold(True)
+    font.setPixelSize(17)
+    p.setFont(font)
+    p.setPen(white)
+    p.drawText(QRectF(pad, pad - 2, WIDTH - 2 * pad, 22), Qt.AlignmentFlag.AlignLeft, "NAPE PRO")
+    if connection is not None:
+        font.setBold(False)
+        p.setFont(font)
+        p.setPen(muted)
+        label = "USB" if connection is Connection.WIRED else "2.4 GHz"
+        p.drawText(QRectF(pad, pad - 2, WIDTH - 2 * pad, 22), Qt.AlignmentFlag.AlignRight, label)
+
+    # Percentage, as large as fits between the header and the bar.
+    number, unit = str(percent), "%"
+    font.setBold(True)
+    unit_font = QFont(font)
+    bolt_w = 22 if charging else 0
+    for size in range(84, 30, -2):  # shrink "100" and the charging bolt to fit the width
+        font.setPixelSize(size)
+        unit_font.setPixelSize(round(size * 0.45))
+        box = QFontMetrics(font).tightBoundingRect(number)
+        unit_width = QFontMetrics(unit_font).horizontalAdvance(unit)
+        total = box.width() + 6 + unit_width + (10 + bolt_w if charging else 0)
+        if total <= WIDTH - 2 * pad:
+            break
+    p.setFont(font)
+    x = (WIDTH - total) / 2
+    baseline = 112
+    p.setPen(digits)
+    p.drawText(round(x - box.left()), baseline, number)
+    p.setFont(unit_font)
+    p.setPen(muted)
+    p.drawText(round(x + box.width() + 6), baseline, unit)
+    if charging:
+        bx, top, h = x + box.width() + 6 + unit_width + 10, baseline - 56, 56
+        bolt = QPainterPath()
+        bolt.moveTo(bx + 0.58 * bolt_w, top)
+        for px, py in ((0, 0.55), (0.42, 0.55), (0.33, 1), (1, 0.4), (0.55, 0.4)):
+            bolt.lineTo(bx + px * bolt_w, top + py * h)
+        bolt.closeSubpath()
+        p.fillPath(bolt, accent)
+
+    bar = QRectF(pad, HEIGHT - pad - 14, WIDTH - 2 * pad, 14)
+    p.setPen(Qt.PenStyle.NoPen)
+    p.setBrush(QColor(255, 255, 255, 40))
+    p.drawRoundedRect(bar, 7, 7)
+    filled = QRectF(bar)
+    filled.setWidth(max(14.0, bar.width() * percent / 100))
+    p.setBrush(accent or white)
+    p.drawRoundedRect(filled, 7, 7)
+    p.end()
+    return image.convertToFormat(QImage.Format.Format_RGB16)
+
+
+def rgb565_bytes(image: QImage) -> bytes:
+    ptr = image.constBits()
+    ptr.setsize(image.sizeInBytes())
+    data = bytes(ptr)
+    row = image.width() * 2
+    if image.bytesPerLine() == row:
+        return data
+    return b"".join(data[y * image.bytesPerLine():y * image.bytesPerLine() + row] for y in range(image.height()))
+
+
 def taskbar_is_dark(app: QApplication, theme: str) -> bool:
     if theme != "auto":
         return theme == "dark"
@@ -203,7 +283,8 @@ def taskbar_is_dark(app: QApplication, theme: str) -> bool:
 
 
 class NapeTrayIcon(QSystemTrayIcon):
-    def __init__(self, app: QApplication, interval_s: int, show_text: bool, theme: str = "auto"):
+    def __init__(self, app: QApplication, interval_s: int, show_text: bool, theme: str = "auto",
+                 vanguard: bool = False):
         super().__init__(app)
         self.app = app
         self.show_text = show_text
@@ -211,6 +292,8 @@ class NapeTrayIcon(QSystemTrayIcon):
         self.last_ok = None       # (BatteryReading, time) of the last successful read
         self.reading = None
         self.warned_low = False
+        self.settings = QSettings("Keychron", APP_NAME)
+        self.bridge = BatteryBridge()
 
         self.menu = QMenu()
         self.status_action = QAction("Reading...")
@@ -225,6 +308,16 @@ class NapeTrayIcon(QSystemTrayIcon):
         self.autostart_action.setChecked(Autostart.enabled())
         self.autostart_action.toggled.connect(self.toggle_autostart)
         self.menu.addAction(self.autostart_action)
+        self.vanguard_action = QAction("Show on Corsair Vanguard screen")
+        self.vanguard_action.setCheckable(True)
+        self.vanguard_action.setToolTip(f"Serve the battery level to the iCUE widget on localhost:{self.bridge.port}")
+        self.vanguard_action.toggled.connect(self.toggle_vanguard)
+        self.menu.addAction(self.vanguard_action)
+        self.screen_action = QAction("Draw on Corsair Vanguard screen (no iCUE)")
+        self.screen_action.setCheckable(True)
+        self.screen_action.setToolTip("Overwrite one Web Hub screen image with the battery level")
+        self.screen_action.toggled.connect(self.toggle_screen)
+        self.menu.addAction(self.screen_action)
         self.quit_action = QAction("Quit")
         self.quit_action.triggered.connect(app.quit)
         self.menu.addAction(self.quit_action)
@@ -237,9 +330,81 @@ class NapeTrayIcon(QSystemTrayIcon):
         self.timer.setInterval(interval_s * 1000)
         self.timer.timeout.connect(self.update_status)
         self.timer.start()
+        app.aboutToQuit.connect(self.bridge.stop)
 
         self.update_status()
         self.setVisible(True)
+        # Set after the first reading, so the widget never sees the "starting" placeholder for long.
+        self.vanguard_action.setChecked(vanguard or self.settings.value("vanguard", False, type=bool))
+        self.screen_action.blockSignals(True)
+        self.screen_action.setChecked(self.settings.value("screen/enabled", False, type=bool))
+        self.screen_action.blockSignals(False)
+        self.draw_screen_if_needed()
+
+    def toggle_screen(self, enable):
+        self.settings.setValue("screen/enabled", enable)
+        if not enable:
+            return
+        from vanguard_screen import ScreenError, VanguardScreen
+
+        try:
+            with VanguardScreen.open() as screen:
+                images = screen.screen_images()
+        except Exception as exc:  # hidapi errors, ScreenError, missing keyboard
+            self.screen_failed(f"Could not reach the keyboard screen: {exc}")
+            return
+        if not images:
+            self.screen_failed("The keyboard has no screen image to draw over. Upload any image "
+                               "to its screen with Corsair Web Hub (Screen tab), then try again.")
+            return
+        # Draw over the newest image; the others stay as they are.
+        self.settings.setValue("screen/image", images[-1])
+        self.settings.remove("screen/last")
+        self.draw_screen_if_needed()
+
+    def screen_failed(self, message):
+        self.showMessage("Keychron Nape Pro", message, QSystemTrayIcon.MessageIcon.Warning)
+        self.screen_action.blockSignals(True)
+        self.screen_action.setChecked(False)
+        self.screen_action.blockSignals(False)
+        self.settings.setValue("screen/enabled", False)
+
+    def draw_screen_if_needed(self):
+        """Redraw the keyboard screen when the battery level changed enough to matter."""
+        if not self.screen_action.isChecked() or self.reading is None or self.reading.status is not Status.OK:
+            return  # keep the last picture while the Nape sleeps, rather than writing flash
+        from vanguard_screen import VanguardScreen, should_redraw
+
+        r = self.reading
+        last = self.settings.value("screen/last")
+        last = tuple(int(v) for v in str(last).split(",")) if last else None
+        if not should_redraw(None if last is None else (last[0], bool(last[1])), r.percent, r.charging):
+            return
+        image_id = self.settings.value("screen/image", type=int)
+        try:
+            with VanguardScreen.open() as screen:
+                screen.replace_image(image_id, rgb565_bytes(draw_screen(r.percent, r.charging, r.connection)))
+        except Exception:
+            return  # unplugged or busy: try again on the next reading, without nagging
+        self.settings.setValue("screen/last", f"{r.percent},{int(r.charging)}")
+
+    def toggle_vanguard(self, enable):
+        if enable:
+            try:
+                self.bridge.start()
+            except OSError as exc:
+                self.showMessage("Keychron Nape Pro",
+                                 f"Could not serve the battery level on port {self.bridge.port}: {exc}",
+                                 QSystemTrayIcon.MessageIcon.Warning)
+                self.vanguard_action.blockSignals(True)
+                self.vanguard_action.setChecked(False)
+                self.vanguard_action.blockSignals(False)
+                return
+            if self.reading is not None:
+                self.bridge.publish(self.reading, self.last_ok)
+        else:
+            self.bridge.stop()
+        self.settings.setValue("vanguard", enable)
 
     def toggle_autostart(self, enable):
         try:
@@ -266,7 +431,9 @@ class NapeTrayIcon(QSystemTrayIcon):
         if self.reading.status is Status.OK:
             self.last_ok = (self.reading, time.time())
             self.notify_if_low(self.reading)
+        self.bridge.publish(self.reading, self.last_ok)
         self.render()
+        self.draw_screen_if_needed()
 
     def notify_if_low(self, reading):
         if reading.charging or reading.percent > LOW_BATTERY:
@@ -312,6 +479,9 @@ def main():
                         help="draw a battery outline instead of the percentage number")
     parser.add_argument("--theme", choices=("auto", "dark", "light"), default="auto",
                         help="icon colours for a dark or light taskbar/panel (default: auto)")
+    parser.add_argument("--vanguard", action="store_true",
+                        help="feed the iCUE widget on a Corsair Vanguard keyboard screen "
+                             "(same as the tray menu option, which is remembered)")
     args = parser.parse_args()
 
     app = QApplication(sys.argv)
@@ -324,7 +494,7 @@ def main():
     if not QSystemTrayIcon.isSystemTrayAvailable():
         print("No system tray available on this desktop", file=sys.stderr)
         return 1
-    tray = NapeTrayIcon(app, max(args.interval, 10), not args.no_text, args.theme)
+    tray = NapeTrayIcon(app, max(args.interval, 10), not args.no_text, args.theme, args.vanguard)
     tray.show()
     return app.exec()
 
